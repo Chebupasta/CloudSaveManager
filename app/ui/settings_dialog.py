@@ -2,9 +2,9 @@
 Диалог настроек приложения: поведение трея, автозапуск вместе с системой
 и кнопка немедленной выгрузки всех сохранений (на всякий случай, вручную).
 """
-from PyQt5.QtCore import Qt
+from PyQt5.QtCore import Qt, pyqtSignal
 from PyQt5.QtWidgets import (
-    QCheckBox, QComboBox, QDialog, QDialogButtonBox, QFormLayout, QHBoxLayout, QLabel,
+    QCheckBox, QComboBox, QDialog, QDialogButtonBox, QFormLayout, QHBoxLayout, QLabel, QLineEdit,
     QMessageBox, QPushButton, QScrollArea, QSizePolicy, QSpinBox, QTabWidget, QVBoxLayout, QWidget,
 )
 
@@ -68,6 +68,8 @@ def _scrollable(page: QWidget) -> QScrollArea:
 
 
 class SettingsDialog(QDialog):
+    update_requested = pyqtSignal(str)  # owner/repo — проверить обновления
+
     def __init__(self, parent, store: ConfigStore):
         super().__init__(parent)
         self.store = store
@@ -141,6 +143,21 @@ class SettingsDialog(QDialog):
             note.setWordWrap(True)
             note.setProperty('muted', True)
             g.addWidget(note)
+        g.addWidget(QLabel('<b>Обновления</b>'))
+        self.update_check = check('Проверять обновления при запуске (GitHub Releases)', st.check_updates)
+        g.addWidget(self.update_check)
+        repo_row = QFormLayout()
+        self.repo_input = QLineEdit(st.update_repo)
+        self.repo_input.setPlaceholderText('например: owner/repo')
+        repo_row.addRow('Репозиторий GitHub:', self.repo_input)
+        repo_label = repo_row.itemAt(0, QFormLayout.LabelRole)
+        if repo_label is not None and repo_label.widget() is not None:
+            repo_label.widget().setWordWrap(True)
+        g.addLayout(repo_row)
+        check_now = QPushButton('Проверить обновления сейчас')
+        check_now.clicked.connect(self._request_update_check)
+        g.addWidget(check_now)
+
         g.addWidget(QLabel('<b>Безопасность</b>'))
         if secrets_store.is_secure_backend_available():
             sec_note = QLabel('Токены и пароли хранятся в защищённом системном хранилище '
@@ -234,6 +251,15 @@ class SettingsDialog(QDialog):
         buttons.rejected.connect(self.reject)
         layout.addWidget(buttons)
 
+    def _request_update_check(self):
+        repo = self.repo_input.text().strip()
+        from app.updater import valid_repo
+        if not valid_repo(repo):
+            QMessageBox.warning(self, 'Обновления',
+                                'Укажите репозиторий GitHub в формате owner/repo.')
+            return
+        self.update_requested.emit(repo)
+
     def _sync_all_now(self):
         jobs = [(g, sl) for g in self.store.games if g.account_id for sl in g.slots if sl.path]
         if not jobs:
@@ -271,6 +297,8 @@ class SettingsDialog(QDialog):
         st.play_lock_enabled = self.play_lock_check.isChecked()
         st.sort_recent = self.sort_recent_check.isChecked()
         st.eco_mode_in_tray = self.eco_check.isChecked()
+        st.check_updates = self.update_check.isChecked()
+        st.update_repo = self.repo_input.text().strip()
         motion.set_enabled(st.animations)
         st.retry_failed_uploads = self.retry_check.isChecked()
         st.poll_interval_sec = self.poll_spin.value()

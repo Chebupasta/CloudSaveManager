@@ -116,6 +116,9 @@ class AppSettings:
     # --- игровые функции ---
     play_lock_enabled: bool = True      # отметка «играют на …» в облаке (защита от игры на двух ПК)
     sort_recent: bool = False           # список игр: сначала недавно запущенные
+    # --- обновления из GitHub Releases ---
+    check_updates: bool = True          # проверять новую версию при запуске
+    update_repo: str = ''               # репозиторий GitHub в формате owner/repo
     # --- вид и ресурсы ---
     theme: str = 'glass'                # оформление: 'glass' (по умолчанию), 'glass_dark', 'light' или 'dark'; применяется при запуске
     animations: bool = True             # короткие плавные анимации интерфейса

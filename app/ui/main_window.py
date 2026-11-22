@@ -6,6 +6,7 @@
 """
 import glob
 import os
+import webbrowser
 
 from PyQt5.QtCore import QSize, Qt, QThread, QTimer, pyqtSignal
 from PyQt5.QtGui import QKeySequence
@@ -16,7 +17,7 @@ from PyQt5.QtWidgets import (QFrame,
     QDialog, QDialogButtonBox, QSystemTrayIcon, QMenu, QScrollArea, QTextBrowser,
 )
 
-from app import backup, os_utils, secrets_store, sync_manager
+from app import backup, os_utils, secrets_store, sync_manager, updater
 from app.logger import log_action
 from app.models import GameProfile
 from app.process_monitor import ProcessMonitor
@@ -286,6 +287,22 @@ class CatalogWorker(QThread):
         self.finished_sync.emit(added, errors)
 
 
+class UpdateCheckWorker(QThread):
+    """Проверка GitHub Releases в фоне — не блокирует интерфейс."""
+    done = pyqtSignal(object)
+
+    def __init__(self, repo: str, parent=None):
+        super().__init__(parent)
+        self.repo = repo
+
+    def run(self):
+        try:
+            info = updater.check_for_update(self.repo)
+        except Exception:
+            info = None
+        self.done.emit(info)
+
+
 class MainWindow(QMainWindow):
     # Фоновая подкачка обложек не имеет права трогать store/виджеты из потока.
     icon_ready = pyqtSignal(str, str)  # game_id, path
@@ -323,6 +340,7 @@ class MainWindow(QMainWindow):
         self.monitor.play_conflict.connect(self._on_play_conflict)
         QTimer.singleShot(45000, self._refresh_manifest_in_background)  # не мешаем запуску
         self._catalog_worker = None
+        self._update_worker = None
         self._pending_status = ''
         self._eco_active = False
         self._last_rendered_game = None
@@ -331,6 +349,7 @@ class MainWindow(QMainWindow):
         power.lower_priority()  # фоновая утилита не должна конкурировать с игрой
         self._catalog_rerun = False
         QTimer.singleShot(1500, self._sync_catalogs)  # после показа окна
+        QTimer.singleShot(8000, self._auto_check_updates)  # обновления — не мешаем старту
         self.monitor.sync_check_result.connect(self._on_sync_check_result)
         self.icon_ready.connect(self._on_icon_ready)
         self.monitor.start()
@@ -581,6 +600,8 @@ class MainWindow(QMainWindow):
         pause_action.triggered.connect(self._toggle_pause)
         settings_action = menu.addAction(svg_icon('settings'), 'Настройки...')
         settings_action.triggered.connect(self._open_settings)
+        update_action = menu.addAction(svg_icon('refresh'), 'Проверить обновления...')
+        update_action.triggered.connect(lambda _=False: self._check_updates())
         menu.addSeparator()
         quit_action = menu.addAction('Выход')
         quit_action.triggered.connect(self._quit_from_tray)
@@ -822,6 +843,7 @@ class MainWindow(QMainWindow):
 
     def _open_settings(self):
         dlg = SettingsDialog(self, self.store)
+        dlg.update_requested.connect(self._check_updates)
         dlg.exec_()
         self._update_pause_button()
 
@@ -1570,6 +1592,68 @@ class MainWindow(QMainWindow):
                 f'{game.name}: ' + ('сохранение выгружено' if all_ok else 'автовыгрузка не выполнена'),
                 summary, QSystemTrayIcon.Information if all_ok else QSystemTrayIcon.Warning, 6000)
         self.statusBar().showMessage(f'{game.name}: автовыгрузка — {summary}')
+
+    # ---------- обновления ----------
+    def _auto_check_updates(self):
+        settings = self.store.settings
+        if not settings.check_updates or not updater.valid_repo(settings.update_repo):
+            return
+        self._check_updates(settings.update_repo)
+
+    def _check_updates(self, repo: str = None, silent: bool = False):
+        repo = (repo or self.store.settings.update_repo or '').strip()
+        if not updater.valid_repo(repo):
+            if not silent:
+                QMessageBox.information(
+                    self, 'Обновления',
+                    'Укажите репозиторий GitHub в Настройках → Обновления (формат owner/repo).')
+            return
+        if self._update_worker is not None and self._update_worker.isRunning():
+            return
+        self._update_worker = UpdateCheckWorker(repo, self)
+        self._update_worker.done.connect(lambda info: self._on_update_checked(info, silent))
+        self._update_worker.start()
+
+    def _on_update_checked(self, info, silent: bool = False):
+        if info is None:
+            if not silent:
+                QMessageBox.information(
+                    self, 'Обновления',
+                    'Новая версия не найдена или GitHub сейчас недоступен.')
+            return
+        notes = (info.notes or '').strip()
+        text = (f'Доступна версия {info.version} (у вас {updater.__version__}).\n\n'
+                f'{notes[:600]}\n\n' if notes else
+                f'Доступна версия {info.version} (у вас {updater.__version__}).\n\n')
+        if not info.asset_url:
+            text += 'Автоматическая замена недоступна — открыть страницу релиза?'
+            if QMessageBox.question(self, 'Обновление', text,
+                                    QMessageBox.Yes | QMessageBox.No, QMessageBox.Yes) == QMessageBox.Yes:
+                webbrowser.open(info.page)
+            return
+        text += 'Скачать и установить обновление? Программа перезапустится.'
+        if QMessageBox.question(self, 'Обновление', text,
+                                QMessageBox.Yes | QMessageBox.No, QMessageBox.Yes) != QMessageBox.Yes:
+            return
+
+        import sys
+        dest = os.path.join(updater.updates_dir(), f'CloudSaveManager_{info.version}.exe')
+        ok, message = run_transfer(
+            self, f'Обновление до {info.version}',
+            lambda progress: updater.download_update(info.asset_url, dest, progress) and (True, 'Готово'))
+        if not ok or not os.path.isfile(dest):
+            QMessageBox.warning(self, 'Обновление', f'Не удалось скачать обновление: {message}')
+            return
+        if not updater.schedule_replace(dest, sys.executable, os.getpid()):
+            QMessageBox.information(
+                self, 'Обновление',
+                f'Обновление скачано: {dest}\n\nАвтозамена доступна только в собранном .exe '
+                f'на Windows. При запуске из исходников откройте страницу релиза и '
+                f'скачайте новую версию вручную.')
+            webbrowser.open(info.page)
+            return
+        self._force_quit = True
+        self.close()
 
     # ---------- справка ----------
     def _show_help(self):

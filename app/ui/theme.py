@@ -6,6 +6,8 @@
 from app.ui import tokens as T
 
 SOFT, SOFT_HOVER, SOFT_PRESSED = T.SOFT, T.SOFT_HOVER, T.SOFT_PRESSED   # фоны вторичных кнопок
+# Явные реэкспорты для старого кода (раньше приходили через `import *`).
+SUCCESS, WARNING, DANGER = T.SUCCESS, T.WARNING, T.DANGER
 
 STYLE_SHEET = f"""
 * {{ outline: none; }}
