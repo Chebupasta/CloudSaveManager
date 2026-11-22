@@ -1,0 +1,23 @@
+__pycache__/
+*.pyc
+.pytest_cache/
+.mypy_cache/
+.coverage
+.venv/
+venv/
+build/
+dist/
+*.spec
+!CloudSaveManager.spec
+.idea/
+.vscode/
+
+# Настройки, секреты и резервные копии больше не хранятся внутри проекта
+# (см. app/constants.py -> get_app_dir), но на всякий случай:
+.github_creds
+secrets.json
+games.json
+accounts.json
+log.txt
+backup/
+backups/
